@@ -1,0 +1,88 @@
+name: Update Company GitLab Activity
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 4 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: company-gitlab-activity
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate LearnTube heatmap
+        shell: python
+        run: |
+          import json
+          from bisect import bisect_right
+          from datetime import datetime, timedelta
+          from pathlib import Path
+          from urllib.request import urlopen
+          from zoneinfo import ZoneInfo
+
+          url = "https://gitlab.com/users/dinesh.learntube/calendar.json"
+          with urlopen(url, timeout=30) as response:
+              counts = json.load(response)
+
+          if not isinstance(counts, dict):
+              raise ValueError("GitLab returned an invalid calendar.")
+
+          today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+          start = today - timedelta(days=364)
+          offset = (start.weekday() + 1) % 7
+          thresholds = (1, 5, 10, 20)
+          colors = ("#28272d", "#7d2d0e", "#b34013", "#e95f21", "#f7b951")
+          total = 0
+
+          svg = [
+              '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 646 108">',
+              '<title>LearnTube GitLab contributions over the past year</title>',
+              '<rect width="100%" height="100%" fill="#18171d"/>',
+          ]
+
+          for i in range(365):
+              day = start + timedelta(days=i)
+              count = counts.get(day.isoformat(), 0)
+              if type(count) is not int or count < 0:
+                  raise ValueError(f"Invalid contribution count for {day}.")
+
+              total += count
+              col, row = divmod(i + offset, 7)
+              x, y = col * 12 + 2, row * 12 + 20
+              color = colors[bisect_right(thresholds, count)]
+
+              if day.day == 1 and col < 51:
+                  svg.append(
+                      f'<text x="{x}" y="12" fill="#bfbfc3" font-size="10" '
+                      f'font-family="sans-serif">{day:%b}</text>'
+                  )
+
+              svg.append(
+                  f'<rect x="{x}" y="{y}" width="10" height="10" '
+                  f'rx="2" fill="{color}"/>'
+              )
+
+          if total == 0:
+              raise ValueError("No visible contributions. Keeping the last heatmap.")
+
+          svg.append("</svg>")
+          Path("gitlab-activity.svg").write_text("\n".join(svg) + "\n", encoding="utf-8")
+
+      - name: Publish heatmap if changed
+        run: |
+          git add -- gitlab-activity.svg
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update LearnTube GitLab heatmap"
+          git push
